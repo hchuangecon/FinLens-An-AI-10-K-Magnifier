@@ -36,3 +36,6 @@ logs/
 
 # macOS
 .DS_Store
+
+# local files
+FinLens_progress_tracker.md
