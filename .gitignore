@@ -30,3 +30,9 @@ data/
 # Logs
 logs/
 *.log
+
+# env
+.env
+
+# macOS
+.DS_Store
