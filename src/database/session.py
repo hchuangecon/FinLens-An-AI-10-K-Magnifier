@@ -99,8 +99,7 @@ def initialize_database(db_settings: DatabaseSettings):
             pool_size=10,  # Default pool size
             max_overflow=20,  # Allow 20 extra connections under load
             pool_pre_ping=True,  # Check connection validity before use
-            echo=False,
-            echo_pool="debug")
+            echo=False)
 
         # Create the session factory (scoped for thread safety)
         session_factory = scoped_session(

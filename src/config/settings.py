@@ -62,9 +62,8 @@ class PipelineSettings(BaseSettings):
     # Let's default to the same as primary doc forms for consistency
     backfill_target_forms: Optional[Set[str]] = Field(
         None, env="BACKFILL_TARGET_FORMS")
-
-    # Document storage subdirectory name
     document_subdir: str = Field("filing_documents", env="DOC_SUBDIR")
+    bulk_ingest_file_chunk_size: int = Field(100000, env="BULK_CHUNK_SIZE")
 
     @validator('bulk_workers', pre=True, always=True)
     def set_bulk_workers(cls, v):

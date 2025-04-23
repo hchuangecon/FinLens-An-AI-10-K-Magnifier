@@ -146,6 +146,15 @@ def parse_arguments():
         help=
         "[Download Mode] Force download even if local file exists (default skips existing)."
     )
+    parser.add_argument(
+        "--bulk-chunk-size",
+        type=int,
+        default=100000,  # Default is 100000, rely on settings if RAM is full
+        metavar='N',
+        help=(
+            "[Bulk Mode] Number of JSON files to process per chunk during "
+            "ingestion to manage memory. Overrides setting/env var if provided."
+        ))
 
     return parser.parse_args()
 
@@ -179,16 +188,46 @@ def main():
     logger.info(f"Executing FinLens Pipeline in mode: {args.mode}")
 
     pipeline = None
-    exit_code = 0  # Assume success unless error occurs
+    exit_code = 0
 
     try:
-        # Initialize the pipeline service
-        # Initialization errors are critical and will raise RuntimeError
+        # Initialize the pipeline service AFTER parsing args
+        # This loads settings initially from .env and defaults
         pipeline = PipelineService()
+
+        # --- Apply Command-Line Overrides to Settings ---
+        # Check if command-line args should override loaded settings
+        # Important: Do this AFTER pipeline init but BEFORE calling run methods
+
+        if args.mode == 'bulk' and args.bulk_chunk_size is not None:
+            if args.bulk_chunk_size > 0:
+                logger.info(
+                    f"Overriding bulk chunk size from settings with command-line value: {args.bulk_chunk_size}"
+                )
+                pipeline.settings.pipeline.bulk_ingest_file_chunk_size = args.bulk_chunk_size
+            else:
+                logger.warning(
+                    "Ignoring invalid command-line --bulk-chunk-size (must be > 0). Using value from settings."
+                )
+
+        if args.mode == 'download_docs' and args.download_threads is not None:
+            if args.download_threads > 0:
+                logger.info(
+                    f"Overriding download threads from settings with command-line value: {args.download_threads}"
+                )
+                pipeline.settings.pipeline.download_threads = args.download_threads
+            else:
+                logger.warning(
+                    "Ignoring invalid command-line --download-threads (must be > 0). Using value from settings."
+                )
+        # Add similar blocks here if you add command-line overrides for
+        # other settings like --days-back, etc.
+        # --- End Overrides ---
 
         # Execute based on mode
         if args.mode == 'bulk':
             logger.info("Running Bulk Process...")
+            # The pipeline will now use the potentially overridden chunk size setting
             success = pipeline.run_bulk_process(
                 download=(not args.skip_download),
                 extract=(not args.skip_extract),
@@ -197,10 +236,10 @@ def main():
 
         elif args.mode == 'incremental':
             logger.info("Running Incremental Update...")
+            # Pass the command-line arg value directly if provided,
+            # otherwise the method uses the setting default
             success = pipeline.run_incremental_update(
-                days_to_check=args.
-                days_back  # Pass None if user didn't specify
-            )
+                days_to_check=args.days_back)
             if not success: exit_code = 1
 
         elif args.mode == 'backfill':
@@ -210,7 +249,11 @@ def main():
                     "Both --start-year and --end-year are required for backfill mode."
                 )
                 exit_code = 1
+            elif args.start_year > args.end_year:
+                logger.error("--start-year cannot be after --end-year.")
+                exit_code = 1
             else:
+                # Pass the parsed forms directly, method uses setting if None
                 forms_set = _parse_forms(args.backfill_forms)
                 success = pipeline.run_historical_backfill(
                     start_year=args.start_year,
@@ -221,12 +264,20 @@ def main():
         elif args.mode == 'download_docs':
             logger.info("Running Document Download Process...")
             # 1. Parse arguments needed for querying
+            # Use pipeline setting as default if CLI arg is None
             target_forms_set = _parse_forms(args.download_forms)
+            if target_forms_set is None:
+                target_forms_set = pipeline.settings.pipeline.target_primary_doc_forms
+                logger.info(
+                    f"Using target forms from settings: {target_forms_set}")
+
             start_date = _parse_date(args.download_start_date)
             end_date = _parse_date(args.download_end_date)
 
-            if not target_forms_set:
-                logger.error("No valid target forms specified for download.")
+            if not target_forms_set:  # Check after potentially getting from settings
+                logger.error(
+                    "No valid target forms specified or found in settings for download."
+                )
                 exit_code = 1
             else:
                 # 2. Query repository to get filings to process
@@ -235,28 +286,31 @@ def main():
                 try:
                     # Use the dedicated repository method which includes SIC filtering
                     filings_to_process = pipeline.filing_repo.find_filings_for_download(
-                        form_types=list(
-                            target_forms_set),  # Pass as list or sequence
+                        form_types=list(target_forms_set),
                         start_date=start_date,
                         end_date=end_date,
-                        limit=args.limit  # Pass limit to DB query
-                    )
+                        limit=args.limit)
 
                     # 3. Call the download service method
                     if filings_to_process:
+                        # Pass the CLI arg value directly to the method,
+                        # the method will use the setting if None is passed
                         success_count, failure_count = pipeline.download_filing_documents(
                             filings_to_process=filings_to_process,
                             target_forms=
-                            target_forms_set,  # Pass target forms for HTML parser
+                            target_forms_set,  # Pass effective target forms
                             num_threads=args.
-                            download_threads,  # Pass None if user didn't specify
-                            max_downloads=args.
-                            max_downloads,  # Pass None if user didn't specify
+                            download_threads,  # Pass CLI value (or None)
+                            max_downloads=args.max_downloads,
                             skip_existing=(not args.no_skip_existing))
-                        # Decide if partial success is an error? For now, just log counts.
-                        if failure_count > 0:
-                            exit_code = 1  # Consider run failed if any download fails
 
+                        if failure_count > 0:
+                            # Consider run partially failed if any download fails
+                            logger.warning(
+                                f"Document download completed with {failure_count} failures."
+                            )
+                            # Keep exit_code = 0 unless a critical error occurred? Or set to 1? Let's set to 1 on failure.
+                            exit_code = 1
                     else:
                         logger.info(
                             "No filings found matching the specified criteria for download."
@@ -267,20 +321,20 @@ def main():
                         f"Database query failed while finding filings to download: {e}"
                     )
                     exit_code = 1
-                except Exception as e:  # Catch other unexpected errors during query/prep
-                    logger.error(f"Error preparing for document download: {e}",
-                                 exc_info=True)
+                except Exception as e:
+                    logger.error(
+                        f"Error during document download process: {e}",
+                        exc_info=True)
                     exit_code = 1
 
         else:
-            # Should not happen if argparse choices are set correctly
             logger.error(f"Unknown mode: {args.mode}")
             exit_code = 1
 
     except FinlensError as fe:
         logger.critical(f"A pipeline error occurred: {fe}", exc_info=True)
         exit_code = 1
-    except RuntimeError as rte:  # Catch init errors from PipelineService
+    except RuntimeError as rte:
         logger.critical(f"Pipeline service failed to initialize: {rte}",
                         exc_info=True)
         exit_code = 1
@@ -292,9 +346,9 @@ def main():
     finally:
         if pipeline:
             logger.info("Closing pipeline resources...")
-            pipeline.close()  # Ensure DB engine is disposed
+            pipeline.close()
         logger.info(f"Pipeline finished with exit code {exit_code}.")
-        sys.exit(exit_code)  # Exit with code 0 on success, 1 on error
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

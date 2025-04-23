@@ -2,17 +2,13 @@
 
 import logging
 from typing import List, Dict, Optional, Set, Sequence
-from sqlalchemy import select, inspect
+from sqlalchemy import select, inspect, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 
-# Assuming .base defines AbstractRepository and SessionFactory
 from .base import AbstractRepository, SessionFactory
-# Assuming ..models defines Company model
 from src.database.models import Company
-# Assuming ..session defines get_session context manager
 from src.database.session import get_session
-# Assuming ...core.exceptions defines custom exceptions
 from src.core.exceptions import DatabaseError, DatabaseQueryError
 
 logger = logging.getLogger(__name__)
@@ -58,6 +54,7 @@ class CompanyRepository(AbstractRepository):
             return set()
         logger.debug(f"Checking existence for {len(ciks_to_check)} CIKs.")
         existing_ciks: Set[str] = set()
+        # Consider making batch_size configurable if needed
         batch_size = 10000
         ciks_list = list(ciks_to_check)
         with get_session(self.session_factory) as session:
@@ -102,14 +99,16 @@ class CompanyRepository(AbstractRepository):
             f"Starting bulk upsert for {len(company_mappings)} company mappings using ON DUPLICATE KEY UPDATE."
         )
 
+        # Filter out mappings that don't have a valid 'cik' key
         valid_mappings = [
-            m for m in company_mappings if 'cik' in m and m['cik']
+            m for m in company_mappings
+            if m.get('cik')  # Use .get() for safer access
         ]
         if len(valid_mappings) != len(company_mappings):
             original_count = len(company_mappings)
             valid_count = len(valid_mappings)
             logger.warning(
-                f"Filtered out {original_count - valid_count} mappings missing 'cik' key during bulk upsert."
+                f"Filtered out {original_count - valid_count} mappings missing 'cik' key or having empty CIK during bulk upsert."
             )
         if not valid_mappings:
             logger.warning(
@@ -118,21 +117,33 @@ class CompanyRepository(AbstractRepository):
 
         company_table = Company.__table__
         mapper = inspect(Company)
+        # Determine all unique keys present across all valid input dictionaries, excluding 'cik'
         all_keys = set(key for mapping in valid_mappings for key in mapping
                        if key != 'cik')
+
+        # Prepare the dictionary for the ON DUPLICATE KEY UPDATE clause
         update_columns = {}
         for col in mapper.columns:
+            # Only include columns that are:
+            # 1. Not the primary key ('cik')
+            # 2. Actually present in the input data (in 'all_keys')
             if not col.primary_key and col.name in all_keys:
-                update_columns[col.name] = mysql_insert(
-                    company_table).inserted[col.name]
+                # Get the actual column object from the table definition
+                column_object = company_table.c[col.name]
+                # Use func.values() to explicitly generate VALUES(column_name) syntax
+                update_columns[col.name] = func.values(column_object)
 
         if not update_columns:
+            # This case could happen if the input mappings ONLY contain 'cik' after filtering
             logger.warning(
-                "No columns specified for update in ON DUPLICATE KEY UPDATE clause. Switching to INSERT IGNORE."
-            )
+                "No columns (other than CIK) found in the input data to use for the "
+                "ON DUPLICATE KEY UPDATE clause. Check input data structure. "
+                "Attempting an INSERT IGNORE operation instead.")
+            # Fallback to INSERT IGNORE if no update columns identified
             stmt = mysql_insert(company_table).values(valid_mappings)
             stmt = stmt.prefix_with("IGNORE", dialect="mysql")
         else:
+            # Construct the standard INSERT ... ON DUPLICATE KEY UPDATE statement
             stmt = mysql_insert(company_table).values(valid_mappings)
             stmt = stmt.on_duplicate_key_update(**update_columns)
 
@@ -143,24 +154,29 @@ class CompanyRepository(AbstractRepository):
                     f"Executing bulk upsert statement for {len(valid_mappings)} companies..."
                 )
                 result = session.execute(stmt)
+                # rowcount for ON DUPLICATE KEY UPDATE:
+                # 1 for each new row inserted
+                # 2 for each existing row updated (if value changed)
+                # 0 for each existing row not updated (if value didn't change)
                 affected_rows = result.rowcount
                 logger.info(
-                    f"Bulk upsert statement executed. Rows affected (MySQL count): {affected_rows}"
+                    f"Bulk upsert statement executed. MySQL 'rows affected': {affected_rows}"
                 )
+                # Commit is handled by the get_session context manager
 
             except SQLAlchemyError as e:
                 logger.error(
                     f"Database error during bulk upsert operation: {e}",
                     exc_info=True)
+                # Rollback is handled by get_session
                 raise DatabaseError(f"Bulk upsert failed: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error during bulk upsert: {e}",
                              exc_info=True)
+                # Rollback is handled by get_session
                 raise DatabaseError(
                     f"Unexpected error during bulk upsert: {e}")
 
         logger.info(
             f"Bulk upsert finished. MySQL affected rows: {affected_rows}.")
         return affected_rows
-
-    # Removed the alias: bulk_merge = bulk_upsert

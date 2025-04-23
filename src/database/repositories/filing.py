@@ -210,7 +210,7 @@ class FilingRepository(AbstractRepository):
             try:
                 results = session.execute(stmt)
                 # Convert results to list of dictionaries using RowMapping._asdict()
-                results_list = [row._asdict() for row in results.mappings()]
+                results_list = [dict(row) for row in results.mappings()]
                 logger.info(
                     f"Found {len(results_list)} filings matching download criteria after filtering."
                 )

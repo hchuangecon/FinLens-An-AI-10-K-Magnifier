@@ -35,7 +35,7 @@ LOGGING_CONFIG = {
         "file": {
             "class":
             "logging.handlers.RotatingFileHandler",  # Example: rotate logs
-            "level": "INFO",  # Log DEBUG level and up to file
+            "level": "DEBUG",  # Log DEBUG level and up to file
             "formatter": "standard",
             "filename": LOG_FILE,  # Use constant or path from settings
             "maxBytes": 10485760,  # 10MB
@@ -68,8 +68,8 @@ LOGGING_CONFIG = {
             "propagate": True,
         },
         "src.extraction.parsers.json": {
-            "level": "INFO",
-            "propagate": False
+            "level": "WARNING",
+            "propagate": True
         },
         # Add levels for specific modules if needed:
         # "src.extraction.downloaders": {

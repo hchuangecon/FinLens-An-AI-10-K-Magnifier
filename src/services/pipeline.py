@@ -226,139 +226,213 @@ class PipelineService:
             return False
 
     def _ingest_bulk_json_data(self, source_dir: Path) -> bool:
-        """Parses CIK JSON files in parallel and ingests data."""
-        logger.info(f"Scanning {source_dir} for CIK*.json files...")
-        # Use rglob to find files recursively, case-insensitive match
+        """
+        Parses CIK JSON files in chunks and ingests data into the database
+        to manage memory usage.
+        """
+        logger.info(
+            f"Scanning {source_dir} for CIK*.json files for ingestion...")
         all_cik_files = list(source_dir.rglob("CIK*.json"))
         if not all_cik_files:
             logger.warning(
                 f"No CIK JSON files found in {source_dir}. Ingestion skipped.")
             return True  # Not an error if no files found
 
-        logger.info(f"Found {len(all_cik_files)} CIK JSON files to process.")
+        total_files_to_process = len(all_cik_files)
+        logger.info(
+            f"Found {total_files_to_process} CIK JSON files to process.")
 
-        aggregated_company_data: Dict[str, Dict] = {
-        }  # Use dict keyed by CIK for latest data
-        aggregated_filings_data: List[Dict] = []
+        # --- Chunking Configuration ---
+        # Adjust this based on available RAM and typical file contents
+        # Start with a value like 50,000 or 100,000 and monitor memory.
+        file_chunk_size = self.settings.pipeline.bulk_ingest_file_chunk_size
+        num_chunks = (total_files_to_process + file_chunk_size -
+                      1) // file_chunk_size
+        logger.info(
+            f"Processing files in {num_chunks} chunks of up to {file_chunk_size} files each."
+        )
+        # -----------------------------
+
         total_parse_errors = 0
-        files_processed = 0
+        total_companies_affected = 0
+        total_filings_inserted = 0
+        overall_success = True
 
         num_workers = self.settings.pipeline.bulk_workers
-        logger.info(f"Starting parallel parsing with {num_workers} workers...")
 
-        # Prepare arguments for the worker function
-        # Pass the parser instance to each worker
-        tasks = [(self.json_parser, file_path) for file_path in all_cik_files]
+        # --- Process Files in Chunks ---
+        for chunk_index in range(num_chunks):
+            start_index = chunk_index * file_chunk_size
+            end_index = start_index + file_chunk_size
+            file_chunk = all_cik_files[start_index:end_index]
 
-        try:
-            # Using multiprocessing.Pool for parallel processing
-            # Consider using imap_unordered for better progress reporting and memory usage
-            with multiprocessing.Pool(processes=num_workers) as pool:
-                chunksize = max(1,
-                                len(tasks) //
-                                (num_workers * 5))  # Heuristic chunk size
-                logger.info(f"Processing in chunks of approx {chunksize}...")
-
-                # Use imap_unordered to get results as they complete
-                results_iterator = pool.starmap(_parse_cik_json_worker,
-                                                tasks,
-                                                chunksize=chunksize)
-
-                for file_path, parse_result in results_iterator:
-                    files_processed += 1
-                    if files_processed % 10000 == 0 or files_processed == len(
-                            all_cik_files):
-                        logger.info(
-                            f"Parsing progress: {files_processed}/{len(all_cik_files)} files processed..."
-                        )
-
-                    company_data, filings_data, parse_errors = parse_result
-                    total_parse_errors += parse_errors
-
-                    if company_data and company_data.get('cik'):
-                        # Store latest parsed data for each CIK
-                        aggregated_company_data[
-                            company_data['cik']] = company_data
-                    if filings_data:
-                        aggregated_filings_data.extend(filings_data)
+            if not file_chunk:
+                logger.info(
+                    f"Skipping empty chunk {chunk_index + 1}/{num_chunks}.")
+                continue
 
             logger.info(
-                f"Parallel parsing complete. Processed: {files_processed}, Total file/record errors: {total_parse_errors}"
+                f"--- Starting processing for chunk {chunk_index + 1}/{num_chunks} ({len(file_chunk)} files) ---"
             )
 
-            # --- Database Ingestion ---
-            logger.info("Starting database ingestion phase...")
+            # Reset aggregators for the current chunk
+            chunk_company_data: Dict[str, Dict] = {
+            }  # Use dict keyed by CIK for latest data
+            chunk_filings_data: List[Dict] = []
+            chunk_parse_errors: int = 0
+            chunk_files_processed: int = 0
 
-            # Ingest Companies using UPSERT
-            if aggregated_company_data:
-                company_list = list(aggregated_company_data.values())
-                logger.info(f"Upserting {len(company_list)} companies...")
-                # --- BATCHING ---
-                company_batch_size = 5000  # Or 1000, 10000 - tune this
-                total_affected_rows = 0
+            logger.info(
+                f"Starting parallel parsing for chunk with {num_workers} workers..."
+            )
+            tasks = [(self.json_parser, file_path) for file_path in file_chunk]
+
+            try:
+                # Process the current chunk in parallel
+                with multiprocessing.Pool(processes=num_workers) as pool:
+                    # Consider chunksize for starmap if chunks are very large
+                    # chunksize_starmap = max(1, len(tasks) // (num_workers * 4))
+                    results_iterator = pool.starmap(
+                        _parse_cik_json_worker,
+                        tasks)  # , chunksize=chunksize_starmap)
+
+                    for file_path, parse_result in results_iterator:
+                        chunk_files_processed += 1
+                        if chunk_files_processed % (file_chunk_size // 5 if file_chunk_size >= 5 else 1) == 0 or \
+                           chunk_files_processed == len(file_chunk):
+                            current_total_processed = start_index + chunk_files_processed
+                            logger.info(
+                                f"Chunk {chunk_index + 1} Parsing: "
+                                f"{chunk_files_processed}/{len(file_chunk)} files processed | "
+                                f"Overall: {current_total_processed}/{total_files_to_process}..."
+                            )
+
+                        company_data, filings_data, parse_errors = parse_result
+                        chunk_parse_errors += parse_errors
+
+                        if company_data and company_data.get('cik'):
+                            # Store latest parsed data for each CIK within the chunk
+                            chunk_company_data[
+                                company_data['cik']] = company_data
+                        if filings_data:
+                            chunk_filings_data.extend(filings_data)
+
+                total_parse_errors += chunk_parse_errors
                 logger.info(
-                    f"Processing company upsert in batches of {company_batch_size}..."
-                )
-                try:
-                    for i in range(0, len(company_list), company_batch_size):
-                        batch = company_list[i:i + company_batch_size]
-                        if not batch: continue
-                        logger.debug(
-                            f"Upserting company batch {i // company_batch_size + 1} ({len(batch)} records)..."
-                        )
-                        affected_rows = self.company_repo.bulk_upsert(batch)
-                        total_affected_rows += affected_rows
-                        logger.debug(
-                            f"Company batch upsert complete. MySQL affected rows for batch: {affected_rows}"
-                        )
-                    logger.info(
-                        f"Company upsert finished for all batches. Total MySQL affected rows: {total_affected_rows}"
-                    )
-                # --- BATCHING ---
-                except DatabaseError as e:
-                    logger.error(
-                        f"Company upsert failed during batch processing: {e}",
-                        exc_info=True)
-                    return False
-            else:
-                logger.info("No valid company data to upsert.")
+                    f"Chunk {chunk_index + 1} parallel parsing complete. "
+                    f"Files processed in chunk: {chunk_files_processed}, "
+                    f"File/record errors in chunk: {chunk_parse_errors}")
 
-            # Ingest Filings using INSERT IGNORE
-            if aggregated_filings_data:
-                # Deduplicate filings by accession number *before* sending to DB
-                # (Reduces load, although DB also handles it)
-                unique_filings_dict = {
-                    f['accession_number']: f
-                    for f in aggregated_filings_data
-                    if f.get('accession_number')
-                }
-                final_filings_to_insert = list(unique_filings_dict.values())
+                # --- Database Ingestion for the Current Chunk ---
                 logger.info(
-                    f"Inserting {len(final_filings_to_insert)} unique filings (after in-memory deduplication)..."
+                    f"Starting database ingestion phase for chunk {chunk_index + 1}..."
                 )
-                # Batching within the repository method is useful here
-                # ignore same filings already in our DB
-                try:
-                    inserted_count = self.filing_repo.bulk_insert_ignore(
-                        final_filings_to_insert)
+
+                # Ingest Companies from the chunk using UPSERT
+                if chunk_company_data:
+                    company_list_chunk = list(chunk_company_data.values())
                     logger.info(
-                        f"Filing insert ignore complete. Rows actually inserted: {inserted_count}"
+                        f"Upserting {len(company_list_chunk)} companies from chunk {chunk_index + 1}..."
                     )
-                except DatabaseError as e:
-                    logger.error(f"Filing insert ignore failed: {e}",
-                                 exc_info=True)
-                    return False  # Treat DB errors as fatal
-            else:
-                logger.info("No valid filing data to insert.")
+                    try:
+                        # Repository handles internal batching if needed, but main batching is now the file chunk
+                        affected_rows = self.company_repo.bulk_upsert(
+                            company_list_chunk)
+                        total_companies_affected += affected_rows
+                        logger.info(
+                            f"Company upsert for chunk {chunk_index + 1} complete. MySQL affected rows: {affected_rows}"
+                        )
+                    except DatabaseError as e:
+                        logger.error(
+                            f"Company upsert failed during processing of chunk {chunk_index + 1}: {e}. Stopping bulk ingest.",
+                            exc_info=True)
+                        overall_success = False
+                        break  # Stop processing further chunks on DB error
+                else:
+                    logger.info(
+                        f"No valid company data to upsert in chunk {chunk_index + 1}."
+                    )
 
-            logger.info("Database ingestion phase complete.")
-            return True
+                # Ingest Filings from the chunk using INSERT IGNORE
+                if chunk_filings_data:
+                    # Deduplication within the chunk - still beneficial
+                    unique_filings_dict_chunk = {
+                        f['accession_number']: f
+                        for f in chunk_filings_data
+                        if f.get('accession_number')
+                    }
+                    final_filings_to_insert_chunk = list(
+                        unique_filings_dict_chunk.values())
+                    logger.info(
+                        f"Inserting {len(final_filings_to_insert_chunk)} unique filings from chunk {chunk_index + 1} (after in-memory deduplication)..."
+                    )
+                    try:
+                        # Repository handles internal batching if needed
+                        inserted_count = self.filing_repo.bulk_insert_ignore(
+                            final_filings_to_insert_chunk)
+                        total_filings_inserted += inserted_count
+                        logger.info(
+                            f"Filing insert ignore for chunk {chunk_index + 1} complete. Rows actually inserted: {inserted_count}"
+                        )
+                    except DatabaseError as e:
+                        logger.error(
+                            f"Filing insert ignore failed during processing of chunk {chunk_index + 1}: {e}. Stopping bulk ingest.",
+                            exc_info=True)
+                        overall_success = False
+                        break  # Stop processing further chunks on DB error
+                else:
+                    logger.info(
+                        f"No valid filing data to insert in chunk {chunk_index + 1}."
+                    )
 
-        except Exception as e:
+                logger.info(
+                    f"--- Finished processing chunk {chunk_index + 1}/{num_chunks} ---"
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"Unexpected error during parallel parsing or ingestion for chunk {chunk_index + 1}: {e}",
+                    exc_info=True)
+                overall_success = False
+                break  # Stop processing further chunks on unexpected error
+
+            # --- Explicitly clear chunk data to potentially help garbage collection ---
+            del chunk_company_data
+            del chunk_filings_data
+            del final_filings_to_insert_chunk  # if created
+            del company_list_chunk  # if created
+            del tasks
+            del results_iterator
+            # import gc # Optional: Force garbage collection (usually not needed)
+            # gc.collect()
+            # -------------------------------------------------------------------------
+
+            if not overall_success:  # Check if loop broke due to error
+                break
+
+        # --- End of Chunk Processing Loop ---
+
+        logger.info("=" * 50)
+        if overall_success:
+            logger.info(
+                f"Bulk ingestion process completed successfully across all chunks."
+            )
+        else:
             logger.error(
-                f"Unexpected error during parallel parsing or ingestion: {e}",
-                exc_info=True)
-            return False
+                f"Bulk ingestion process failed or stopped prematurely.")
+
+        logger.info(f"Final Summary:")
+        logger.info(
+            f"  Total Files Processed: Approximately {start_index + chunk_files_processed if 'start_index' in locals() else 0}/{total_files_to_process}"
+        )
+        logger.info(f"  Total Parse Errors Encountered: {total_parse_errors}")
+        logger.info(
+            f"  Total Company Rows Affected (MySQL Count): {total_companies_affected}"
+        )
+        logger.info(f"  Total Filing Rows Inserted: {total_filings_inserted}")
+        logger.info("=" * 50)
+
+        return overall_success
 
     # --- End of Bulk Process ---
 
@@ -784,10 +858,16 @@ class PipelineService:
 
         try:
             # Find the primary HTM filename using the HTML parser
-            primary_filename = self.html_parser.find_primary_document_filename(
+            primary_filename, is_likely_abs = self.html_parser.find_primary_document(
                 cik=cik,
                 accession_number=accession_number,
                 target_form_types=target_forms)
+
+            if is_likely_abs:
+                logger.info(
+                    f"Skipping download prep for {cik}/{accession_number}: Flagged as likely ABS by HTML parser."
+                )
+                return None  # Don't prepare download for likely ABS filings (No real business operations)
 
             if primary_filename:
                 # Construct output path
