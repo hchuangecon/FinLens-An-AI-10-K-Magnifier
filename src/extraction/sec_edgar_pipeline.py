@@ -26,7 +26,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from bs4 import BeautifulSoup  # For HTML parsing in helper
 
 # --- Local Module Import ---
-import finlens.database as db
+import src.database as db
 
 # --- Load Environment Variables ---
 load_dotenv()
