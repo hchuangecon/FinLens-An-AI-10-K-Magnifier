@@ -1,0 +1,3 @@
+[submodule "libs/sec-parser"]
+	path = libs/sec-parser
+	url = https://github.com/alphanome-ai/sec-parser.git
