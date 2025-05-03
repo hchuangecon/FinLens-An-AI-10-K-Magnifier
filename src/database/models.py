@@ -1,4 +1,4 @@
-# finlens/database/models.py
+# src/database/models.py
 import logging
 import sys
 # from dotenv import load_dotenv # Removed - Handled by settings.py

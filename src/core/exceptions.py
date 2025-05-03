@@ -1,4 +1,4 @@
-# finlens/core/exceptions.py
+# src/core/exceptions.py
 
 
 class FinlensError(Exception):

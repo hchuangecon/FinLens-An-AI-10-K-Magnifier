@@ -1,4 +1,4 @@
-# finlens/core/rate_limiting.py
+# src/core/rate_limiting.py
 import time
 import logging
 from threading import Lock

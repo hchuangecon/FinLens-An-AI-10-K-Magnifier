@@ -1,4 +1,4 @@
-# finlens/database/session.py
+# src/database/session.py
 import logging
 import sys
 from sqlalchemy import create_engine, text
