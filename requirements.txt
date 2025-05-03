@@ -1,55 +1,31 @@
-# requirements.txt
+# Core Python Libraries
+python-dotenv         # For loading .env files (used by pydantic-settings)
+pydantic>=2.0         # For data models (FinLensNode, SecParserMetadata)
+pydantic-settings     # For loading configuration from .env
 
-# --- Core & Configuration ---
-pydantic>=2.0,<3.0  # For settings management & models (Using V2 syntax)
-pydantic-settings>=2.0,<3.0 # For loading settings from .env etc.
-python-dotenv>=1.0.0   # For loading .env files
+# Database
+sqlalchemy>=2.0       # For database interaction
+# Add your specific MySQL driver here if not already installed, e.g.:
+# mysqlclient         # OR mysql-connector-python
 
-# --- Database (Phase 1 & ongoing) ---
-sqlalchemy>=2.0,<3.0    # ORM (Using V2 syntax)
-mysql-connector-python>=8.0 # MySQL Driver
+# Web & HTML Processing
+requests              # For HTTP requests (Phase 1 downloader)
+beautifulsoup4        # General HTML parsing utilities
+lxml                  # Fast HTML/XML parser (backend for pandas.read_html)
+pandas>=2.0           # Used for TableElement processing -> Markdown
+markdownify           # Optional: Alternative for HTML to Markdown conversion
+# tabletomarkdown     # Optional: Alternative for HTML table to Markdown
+# docling             # Optional: Alternative for HTML (parser) table to Markdown
+# SEC Parser (Editable install from local libs directory)
+# This ensures your modified version in libs/sec-parser is used
+-e ./libs/sec-parser
 
-# --- Web Requests & HTML Parsing (Phase 1 & potentially fallback in P2) ---
-requests>=2.28.0      # HTTP requests for APIs and downloads
-beautifulsoup4>=4.11.0  # HTML parsing (especially for index pages/fallback)
-lxml>=4.9.0           # Faster parser for BeautifulSoup
+# Testing (Optional, but good practice)
+# pytest
 
-# --- Document Parsing (Phase 2 - Core) ---
-docling>=2.0.0        # Core library for structured document parsing (Check latest version)
-# docling-core is usually installed as a dependency of docling
-
-# --- Embeddings & ML (Phase 2) ---
-sentence-transformers>=2.2.0 # For generating embeddings
-torch>=1.12.0         # Dependency for sentence-transformers (or tensorflow/jax)
-# Consider torch with specific CUDA version if using GPU: torch==2.x.x+cuXXX
-numpy>=1.21.0         # Numerical processing, often a dependency
-
-# --- Vector Databases (Phase 2 & 3) ---
-# Choose ONE primary client and install, keep others for reference or local dev
-qdrant-client>=1.7.0    # Client for Qdrant DB
-# pinecone-client>=3.0.0 # Client for Pinecone DB
-# chromadb>=0.4.0        # Client for ChromaDB (good for local dev)
-
-# --- Data Handling (Phase 2 & 4) ---
-pandas>=1.5.0           # Useful for handling extracted table data, analysis
-
-# --- (Optional) LLM Clients (Phase 3 - QueryPreprocessor) ---
-# openai>=1.0.0         # If using OpenAI models
-# anthropic>=0.20.0     # If using Anthropic models
-
-# --- (Optional) Phase 4 - Visualization ---
-# matplotlib>=3.5.0
-# seaborn>=0.12.0
-# plotly>=5.10.0
-
-# --- (Optional) Phase 4 - Web UI / API ---
-# streamlit>=1.20.0
-# plotly-dash>=2.9.0
-# fastapi>=0.95.0
-# uvicorn>=0.20.0
-
-# --- Development & Utilities ---
-# Add tools like black, isort, pytest if desired for development workflow
-
-# NOTE: It's recommended to pin versions after initial setup for reproducibility.
-# Run `pip freeze > requirements.txt` to capture exact versions used.
+# Add other specific dependencies for your project below
+# e.g., Vector DB client (qdrant-client, chromadb), Embedding model library (sentence-transformers, openai)
+# qdrant-client
+# chromadb
+# sentence-transformers
+# openai

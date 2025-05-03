@@ -45,3 +45,4 @@ notes/
 # src outputs
 tests/output/
 jpm_nodes_output.json
+*_nodes_output.json
