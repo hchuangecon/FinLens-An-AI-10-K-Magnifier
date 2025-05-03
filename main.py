@@ -22,7 +22,7 @@ except ImportError as e:
 
 # Now import other components
 try:
-    from src.services.pipeline import PipelineService
+    from src.phase1_extraction.services.pipeline_service import PipelineService
     from src.core.exceptions import FinlensError, DatabaseQueryError
 except ImportError as e:
     logging.critical(
@@ -149,7 +149,7 @@ def parse_arguments():
     parser.add_argument(
         "--bulk-chunk-size",
         type=int,
-        default=100000,  # Default is 100000, rely on settings if RAM is full
+        default=100000,  # Default is 100000, change if RAM is full
         metavar='N',
         help=(
             "[Bulk Mode] Number of JSON files to process per chunk during "
